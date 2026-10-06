@@ -1,4 +1,3 @@
-
 CC = gcc
 
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -Iinclude
@@ -7,7 +6,8 @@ TARGET = build/stracelite
 
 SRC = src/main.c \
       src/tracer.c \
-      src/syscall.c
+      src/syscall.c \
+      src/memory.c
 
 all: $(TARGET)
 
@@ -19,4 +19,3 @@ clean:
 	rm -rf build/*
 
 .PHONY: all clean
-
