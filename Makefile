@@ -7,7 +7,8 @@ TARGET = build/stracelite
 SRC = src/main.c \
       src/tracer.c \
       src/syscall.c \
-      src/memory.c
+      src/memory.c \
+      src/stats.c
 
 all: $(TARGET)
 
