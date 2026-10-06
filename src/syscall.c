@@ -430,3 +430,151 @@ const char *syscall_name(long syscall_number)
 
     return "unknown";
 }
+/*
+ * Classify commonly encountered syscalls.
+ */
+SyscallCategory syscall_category(long syscall_number)
+{
+    switch (syscall_number) {
+
+        /*
+         * File I/O
+         */
+        case 0:    /* read */
+        case 1:    /* write */
+        case 2:    /* open */
+        case 3:    /* close */
+        case 4:    /* stat */
+        case 5:    /* fstat */
+        case 6:    /* lstat */
+        case 17:   /* pread64 */
+        case 18:   /* pwrite64 */
+        case 19:   /* readv */
+        case 20:   /* writev */
+        case 21:   /* access */
+        case 72:   /* fcntl */
+        case 73:   /* flock */
+        case 74:   /* fsync */
+        case 75:   /* fdatasync */
+        case 78:   /* getdents */
+        case 79:   /* getcwd */
+        case 80:   /* chdir */
+        case 81:   /* fchdir */
+        case 87:   /* unlink */
+        case 89:   /* readlink */
+        case 257:  /* openat */
+        case 262:  /* newfstatat */
+        case 263:  /* unlinkat */
+        case 267:  /* readlinkat */
+        case 217:  /* getdents64 */
+            return SYSCALL_CATEGORY_FILE_IO;
+
+        /*
+         * Memory management.
+         */
+        case 9:    /* mmap */
+        case 10:   /* mprotect */
+        case 11:   /* munmap */
+        case 12:   /* brk */
+        case 25:   /* mremap */
+        case 26:   /* msync */
+        case 27:   /* mincore */
+        case 28:   /* madvise */
+        case 149:  /* mlock */
+        case 150:  /* munlock */
+        case 151:  /* mlockall */
+        case 152:  /* munlockall */
+        case 216:  /* remap_file_pages */
+            return SYSCALL_CATEGORY_MEMORY;
+
+        /*
+         * Process/thread management.
+         */
+        case 39:   /* getpid */
+        case 56:   /* clone */
+        case 57:   /* fork */
+        case 58:   /* vfork */
+        case 59:   /* execve */
+        case 60:   /* exit */
+        case 61:   /* wait4 */
+        case 62:   /* kill */
+        case 110:  /* getppid */
+        case 186:  /* gettid */
+        case 231:  /* exit_group */
+        case 234:  /* tgkill */
+        case 273:  /* set_robust_list */
+        case 274:  /* get_robust_list */
+        case 435:  /* clone3 */
+            return SYSCALL_CATEGORY_PROCESS;
+
+        /*
+         * Networking.
+         */
+        case 41:   /* socket */
+        case 42:   /* connect */
+        case 43:   /* accept */
+        case 44:   /* sendto */
+        case 45:   /* recvfrom */
+        case 46:   /* sendmsg */
+        case 47:   /* recvmsg */
+        case 48:   /* shutdown */
+        case 49:   /* bind */
+        case 50:   /* listen */
+        case 51:   /* getsockname */
+        case 52:   /* getpeername */
+        case 53:   /* socketpair */
+        case 54:   /* setsockopt */
+        case 55:   /* getsockopt */
+        case 288:  /* accept4 */
+        case 299:  /* recvmmsg */
+        case 307:  /* sendmmsg */
+            return SYSCALL_CATEGORY_NETWORK;
+
+        /*
+         * General system operations.
+         */
+        case 13:   /* rt_sigaction */
+        case 14:   /* rt_sigprocmask */
+        case 16:   /* ioctl */
+        case 96:   /* gettimeofday */
+        case 97:   /* getrlimit */
+        case 98:   /* getrusage */
+        case 99:   /* sysinfo */
+        case 158:  /* arch_prctl */
+        case 202:  /* futex */
+        case 218:  /* set_tid_address */
+        case 302:  /* prlimit64 */
+        case 318:  /* getrandom */
+            return SYSCALL_CATEGORY_SYSTEM;
+
+        default:
+            return SYSCALL_CATEGORY_UNKNOWN;
+    }
+}
+
+/*
+ * Convert category enum into printable text.
+ */
+const char *syscall_category_name(SyscallCategory category)
+{
+    switch (category) {
+
+        case SYSCALL_CATEGORY_FILE_IO:
+            return "FILE_IO";
+
+        case SYSCALL_CATEGORY_MEMORY:
+            return "MEMORY";
+
+        case SYSCALL_CATEGORY_PROCESS:
+            return "PROCESS";
+
+        case SYSCALL_CATEGORY_NETWORK:
+            return "NETWORK";
+
+        case SYSCALL_CATEGORY_SYSTEM:
+            return "SYSTEM";
+
+        default:
+            return "UNKNOWN";
+    }
+}
