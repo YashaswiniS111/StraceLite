@@ -1,9 +1,15 @@
+#include "tracer.h"
+
 #include <stdio.h>
 
-int main(void)
+int main(int argc, char *argv[])
 {
-    printf("StraceLite: syscall tracer and mini-debugger\n");
-    printf("Milestone 0: project foundation ready.\n");
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <program> [args...]\n", argv[0]);
+        return 1;
+    }
 
-    return 0;
+    printf("[StraceLite] Launching target: %s\n", argv[1]);
+
+    return tracer_launch(&argv[1]);
 }

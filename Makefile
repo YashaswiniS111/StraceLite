@@ -1,10 +1,11 @@
 CC = gcc
 
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -Iinclude
 
 TARGET = build/stracelite
 
-SRC = src/main.c
+SRC = src/main.c \
+      src/tracer.c
 
 all: $(TARGET)
 
