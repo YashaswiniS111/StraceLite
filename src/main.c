@@ -9,7 +9,8 @@
  * Parse a comma-separated syscall filter list.
  *
  * Example:
- *   openat,read,write
+ *
+ *     openat,read,write
  */
 static int parse_filter_list(const char *list)
 {
@@ -30,6 +31,11 @@ static int parse_filter_list(const char *list)
     while (token != NULL) {
 
         if (filter_add(token) == -1) {
+
+            fprintf(stderr,
+                    "[StraceLite] Unknown or invalid syscall: %s\n",
+                    token);
+
             free(copy);
             return -1;
         }
@@ -45,6 +51,7 @@ static int parse_filter_list(const char *list)
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
+
         fprintf(stderr,
                 "Usage: %s [--filter syscall1,syscall2,...] "
                 "<program> [args...]\n",
@@ -54,18 +61,19 @@ int main(int argc, char *argv[])
     }
 
     /*
-     * Initialize the filter system.
+     * Initialize filtering.
      */
     filter_init();
 
     int target_index = 1;
 
     /*
-     * Optional filter argument.
+     * Optional syscall filter.
      */
     if (strcmp(argv[1], "--filter") == 0) {
 
         if (argc < 4) {
+
             fprintf(stderr,
                     "Usage: %s --filter syscall1,syscall2,... "
                     "<program> [args...]\n",
@@ -75,6 +83,7 @@ int main(int argc, char *argv[])
         }
 
         if (parse_filter_list(argv[2]) == -1) {
+
             fprintf(stderr,
                     "[StraceLite] Failed to configure syscall filter\n");
 
@@ -83,7 +92,8 @@ int main(int argc, char *argv[])
 
         target_index = 3;
 
-        printf("[StraceLite] Syscall filter: %s\n", argv[2]);
+        printf("[StraceLite] Syscall filter: %s\n",
+               argv[2]);
     }
 
     printf("[StraceLite] Launching target: %s\n",

@@ -1,4 +1,5 @@
 #include "filter.h"
+#include "syscall.h"
 
 #include <string.h>
 
@@ -19,6 +20,41 @@ int filter_add(const char *name)
 {
     if (name == NULL || name[0] == '\0') {
         return -1;
+    }
+
+    /*
+     * Verify that the syscall name actually exists.
+     *
+     * This prevents commands such as:
+     *
+     *     --filter hello,world
+     *
+     * from silently producing no output.
+     */
+    int valid = 0;
+
+    for (long number = 0; number < 512; number++) {
+
+        const char *known_name = syscall_name(number);
+
+        if (strcmp(known_name, name) == 0) {
+            valid = 1;
+            break;
+        }
+    }
+
+    if (!valid) {
+        return -1;
+    }
+
+    /*
+     * Prevent the same syscall from being added twice.
+     */
+    for (size_t i = 0; i < filter_count; i++) {
+
+        if (strcmp(filters[i], name) == 0) {
+            return 0;
+        }
     }
 
     if (filter_count >= MAX_FILTERS) {
@@ -50,8 +86,8 @@ int filter_allows(const char *name)
     }
 
     /*
-     * When filters are configured, only explicitly
-     * selected syscall names are allowed.
+     * When filters are configured,
+     * only explicitly selected syscalls are shown.
      */
     for (size_t i = 0; i < filter_count; i++) {
 
