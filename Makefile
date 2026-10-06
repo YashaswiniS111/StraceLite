@@ -1,4 +1,4 @@
-CC = gcc
+kkCC = gcc
 
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -Iinclude
 
@@ -8,7 +8,8 @@ SRC = src/main.c \
       src/tracer.c \
       src/syscall.c \
       src/memory.c \
-      src/stats.c
+      src/stats.c \
+      src/filter.c
 
 all: $(TARGET)
 
