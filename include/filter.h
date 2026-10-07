@@ -3,10 +3,14 @@
 
 #include <stddef.h>
 
+#define MAX_FILTERS 64
+#define MAX_NAME_LENGTH 64
+
 /*
  * Initialize the syscall filter.
  *
- * If no filter is configured, all syscalls are allowed.
+ * If no filter is configured,
+ * all syscalls are allowed.
  */
 void filter_init(void);
 
@@ -29,8 +33,27 @@ int filter_add(const char *name);
 int filter_allows(const char *name);
 
 /*
- * Check whether filtering is currently enabled.
+ * Check whether filtering is enabled.
  */
 int filter_enabled(void);
+
+/*
+ * Configure filtering by syscall category.
+ *
+ * Returns:
+ *   0  -> success
+ *  -1  -> invalid category
+ */
+int filter_set_category(const char *category);
+
+/*
+ * Check whether a syscall belongs to
+ * the currently selected category.
+ *
+ * Returns:
+ *   1 -> allowed
+ *   0 -> filtered
+ */
+int filter_category_allows(long syscall_number);
 
 #endif

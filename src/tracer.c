@@ -1,3 +1,4 @@
+
 #define _GNU_SOURCE
 
 #include "tracer.h"
@@ -16,6 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+
 /*
  * ============================================================
  * StraceLite - System Call Tracer
@@ -31,9 +33,11 @@
  * 6. Detect Linux syscall errors
  * 7. Decode execve() path from tracee memory
  * 8. Collect syscall statistics
- * 9. Support syscall filtering
+ * 9. Support syscall-name filtering
+ * 10. Support syscall-category filtering
  *
  * Architecture:
+ *
  *     Linux x86-64
  *
  * Syscall argument registers:
@@ -59,10 +63,6 @@
  * Print syscall arguments
  * ============================================================ */
 
-/*
- * Print the six syscall argument registers used by
- * the x86-64 Linux syscall ABI.
- */
 static void print_syscall_arguments(
     struct user_regs_struct *regs)
 {
@@ -73,7 +73,6 @@ static void print_syscall_arguments(
            "r10=0x%llx, "
            "r8=0x%llx, "
            "r9=0x%llx\n",
-
            (unsigned long long)regs->rdi,
            (unsigned long long)regs->rsi,
            (unsigned long long)regs->rdx,
@@ -103,15 +102,12 @@ int tracer_launch(char *const argv[])
 
     /*
      * Reset syscall statistics.
-     *
-     * This ensures every trace starts with
-     * a clean statistics table.
      */
     stats_reset();
 
 
     /* ========================================================
-     * CREATE CHILD
+     * CREATE CHILD PROCESS
      * ======================================================== */
 
     pid_t child = fork();
@@ -124,11 +120,9 @@ int tracer_launch(char *const argv[])
     }
 
 
-    /*
-     * ========================================================
+    /* ========================================================
      * CHILD PROCESS
-     * ========================================================
-     */
+     * ======================================================== */
 
     if (child == 0) {
 
@@ -147,10 +141,7 @@ int tracer_launch(char *const argv[])
 
 
         /*
-         * Stop ourselves.
-         *
-         * This gives the parent a chance to configure
-         * ptrace before execvp().
+         * Stop ourselves so the parent can configure ptrace.
          */
         if (raise(SIGSTOP) == -1) {
 
@@ -167,7 +158,7 @@ int tracer_launch(char *const argv[])
 
 
         /*
-         * If execution reaches here, execvp() failed.
+         * Only reached if execvp() fails.
          */
         perror("execvp");
 
@@ -175,11 +166,9 @@ int tracer_launch(char *const argv[])
     }
 
 
-    /*
-     * ========================================================
+    /* ========================================================
      * PARENT / TRACER PROCESS
-     * ========================================================
-     */
+     * ======================================================== */
 
     int status;
 
@@ -198,15 +187,9 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Verify that the child really stopped.
+     * Verify that the child actually stopped.
      */
-    if (WIFSTOPPED(status)) {
-
-        printf("[Tracer] Child %d stopped by signal %d\n",
-               child,
-               WSTOPSIG(status));
-
-    } else {
+    if (!WIFSTOPPED(status)) {
 
         fprintf(stderr,
                 "[Tracer] Unexpected child state\n");
@@ -215,17 +198,18 @@ int tracer_launch(char *const argv[])
     }
 
 
-    /* ========================================================
-     * CONFIGURE PTRACE
-     * ======================================================== */
+    printf("[Tracer] Child %d stopped by signal %d\n",
+           child,
+           WSTOPSIG(status));
+
 
     /*
-     * PTRACE_O_TRACESYSGOOD causes syscall stops to appear as:
+     * Configure ptrace.
+     *
+     * PTRACE_O_TRACESYSGOOD causes syscall stops
+     * to be reported as:
      *
      *     SIGTRAP | 0x80
-     *
-     * This allows us to distinguish syscall stops from
-     * ordinary SIGTRAP signals.
      */
     if (ptrace(PTRACE_SETOPTIONS,
                child,
@@ -239,10 +223,7 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Start the child.
-     *
-     * PTRACE_SYSCALL tells the kernel to stop the child
-     * at the next syscall entry/exit.
+     * Continue child until first syscall stop.
      */
     if (ptrace(PTRACE_SYSCALL,
                child,
@@ -255,13 +236,11 @@ int tracer_launch(char *const argv[])
     }
 
 
-    /* ========================================================
-     * TRACE STATE
-     * ======================================================== */
-
     /*
-     * 1 = next syscall stop is an entry
-     * 0 = next syscall stop is an exit
+     * Syscall stop state:
+     *
+     *     1 = syscall entry
+     *     0 = syscall exit
      */
     int entering_syscall = 1;
 
@@ -273,30 +252,25 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Current syscall number.
-     *
-     * We save the syscall number at entry because the
-     * return value is processed at the exit stop.
+     * Syscall number belonging to the current
+     * entry/exit pair.
      */
     long current_syscall_number = -1;
 
 
     /* ========================================================
-     * MAIN TRACE LOOP
+     * MAIN TRACING LOOP
      * ======================================================== */
 
     while (1) {
 
         /*
-         * Wait until the tracee stops or exits.
+         * Wait for the next child event.
          */
         if (waitpid(child,
                     &status,
                     0) == -1) {
 
-            /*
-             * Interrupted wait is not a fatal error.
-             */
             if (errno == EINTR) {
                 continue;
             }
@@ -307,10 +281,9 @@ int tracer_launch(char *const argv[])
         }
 
 
-        /* ====================================================
-         * NORMAL EXIT
-         * ==================================================== */
-
+        /*
+         * Child exited normally.
+         */
         if (WIFEXITED(status)) {
 
             printf("[Tracer] Child exited with status %d\n",
@@ -320,10 +293,9 @@ int tracer_launch(char *const argv[])
         }
 
 
-        /* ====================================================
-         * SIGNAL TERMINATION
-         * ==================================================== */
-
+        /*
+         * Child was terminated by a signal.
+         */
         if (WIFSIGNALED(status)) {
 
             printf("[Tracer] Child terminated by signal %d\n",
@@ -333,10 +305,9 @@ int tracer_launch(char *const argv[])
         }
 
 
-        /* ====================================================
-         * UNEXPECTED STATE
-         * ==================================================== */
-
+        /*
+         * Ignore unexpected non-stopped states.
+         */
         if (!WIFSTOPPED(status)) {
 
             if (ptrace(PTRACE_SYSCALL,
@@ -354,23 +325,20 @@ int tracer_launch(char *const argv[])
 
 
         /*
-         * Get the signal responsible for the stop.
+         * Get the signal that caused the stop.
          */
         int signal_number = WSTOPSIG(status);
 
 
         /* ====================================================
-         * EXECVE SIGTRAP
+         * HANDLE PTRACE SIGTRAP
          * ==================================================== */
 
         /*
          * After execve(), Linux generates a plain SIGTRAP.
          *
-         * This SIGTRAP is generated for the tracer and should
-         * NOT be delivered back to the tracee.
-         *
-         * If we accidentally deliver it, programs such as
-         * /bin/ls may terminate with signal 5.
+         * This belongs to ptrace and should not be delivered
+         * to the tracee.
          */
         if (signal_number == SIGTRAP) {
 
@@ -389,17 +357,15 @@ int tracer_launch(char *const argv[])
 
 
         /* ====================================================
-         * NON-SYSCALL SIGNAL
+         * HANDLE REAL SIGNALS
          * ==================================================== */
 
         /*
-         * With PTRACE_O_TRACESYSGOOD:
+         * A syscall stop is:
          *
          *     SIGTRAP | 0x80
          *
-         * represents a syscall stop.
-         *
-         * Any other signal is a real signal received by
+         * Any other signal is a real signal delivered to
          * the tracee.
          */
         if (signal_number != (SIGTRAP | 0x80)) {
@@ -408,18 +374,13 @@ int tracer_launch(char *const argv[])
 
 
             /*
-             * Do not re-deliver the initial SIGSTOP.
+             * Do not re-deliver SIGSTOP.
              */
             if (signal_number == SIGSTOP) {
-
                 deliver_signal = 0;
             }
 
 
-            /*
-             * Continue the tracee while optionally forwarding
-             * the real signal.
-             */
             if (ptrace(PTRACE_SYSCALL,
                        child,
                        NULL,
@@ -435,11 +396,10 @@ int tracer_launch(char *const argv[])
 
 
         /* ====================================================
-         * GET REGISTERS
+         * GET TRACEe REGISTERS
          * ==================================================== */
 
         struct user_regs_struct regs;
-
 
         if (ptrace(PTRACE_GETREGS,
                    child,
@@ -459,54 +419,43 @@ int tracer_launch(char *const argv[])
         if (entering_syscall) {
 
             /*
-             * x86-64 Linux stores the original syscall number
-             * in orig_rax.
+             * On x86-64 Linux:
+             *
+             *     orig_rax = syscall number
              */
             long syscall_number =
                 (long)regs.orig_rax;
 
 
-            /*
-             * Save the syscall number so it can be used
-             * during the exit stop.
-             */
             current_syscall_number =
                 syscall_number;
 
 
             /*
-             * Convert syscall number to human-readable name.
+             * Convert syscall number into name.
              */
             const char *name =
                 syscall_name(syscall_number);
 
 
             /*
-             * Count every syscall.
-             *
-             * Filtering only affects display.
-             * It does NOT affect statistics.
+             * Count every syscall, even when filtered.
              */
             syscall_count++;
 
 
-            /* =================================================
-             * EXECVE PATH DECODING
-             * ================================================= */
-
             /*
-             * execve() syscall number on x86-64 Linux:
+             * =================================================
+             * EXECVE MEMORY DECODING
+             * =================================================
              *
-             *     59
+             * execve() has:
              *
-             * Its first argument:
-             *
-             *     rdi = filename pointer
+             *     rdi = filename
              */
             if (syscall_number == 59) {
 
                 char path[4096];
-
 
                 if (tracee_read_string(
                         child,
@@ -520,30 +469,33 @@ int tracer_launch(char *const argv[])
             }
 
 
-            /* =================================================
-             * FILTERED DISPLAY
-             * ================================================= */
-
             /*
-             * Display only if the syscall passes the filter.
+             * =================================================
+             * FILTERING
+             * =================================================
              *
-             * If no filter is configured, filter_allows()
-             * returns 1 for every syscall.
+             * A syscall is displayed only when:
+             *
+             * 1. It passes the syscall-name filter
+             * 2. It passes the category filter
+             *
+             * If either filter is disabled, that filter
+             * automatically allows the syscall.
              */
-            if (filter_allows(name)) {
+            if (filter_allows(name) &&
+                filter_category_allows(syscall_number)) {
 
                 printf("[Syscall Entry] #%lu  %ld (%s)\n",
                        syscall_count - 1,
                        syscall_number,
                        name);
 
-
                 print_syscall_arguments(&regs);
             }
 
 
             /*
-             * The next syscall stop will be the exit.
+             * Next syscall stop will be an exit stop.
              */
             entering_syscall = 0;
         }
@@ -556,36 +508,34 @@ int tracer_launch(char *const argv[])
         else {
 
             /*
-             * Linux stores the syscall return value in rax.
+             * Syscall return value is stored in RAX.
              */
             long return_value =
                 (long)regs.rax;
 
 
             /*
-             * Get the syscall name using the number saved
-             * during syscall entry.
+             * Get syscall name.
              */
             const char *name =
                 syscall_name(current_syscall_number);
 
 
-            /* =================================================
-             * RECORD STATISTICS
-             * ================================================= */
-
             /*
-             * Record every syscall, including filtered ones.
+             * Record statistics for every syscall.
+             *
+             * Statistics are NOT affected by filtering.
              */
             stats_record(current_syscall_number,
                          return_value);
 
 
-            /* =================================================
-             * DISPLAY RETURN VALUE
-             * ================================================= */
-
-            if (filter_allows(name)) {
+            /*
+             * Display exit only if both filters allow it.
+             */
+            if (filter_allows(name) &&
+                filter_category_allows(
+                    current_syscall_number)) {
 
                 printf("[Syscall Exit ] #%lu  %ld (%s)",
                        syscall_count - 1,
@@ -598,10 +548,8 @@ int tracer_launch(char *const argv[])
 
 
                 /*
-                 * Linux system calls normally indicate errors
-                 * using negative errno values in the range:
-                 *
-                 *     -1 to -4095
+                 * Linux syscalls normally return negative
+                 * errno values when an error occurs.
                  */
                 if (return_value < 0 &&
                     return_value >= -4095) {
@@ -616,14 +564,14 @@ int tracer_launch(char *const argv[])
 
 
             /*
-             * The next syscall stop will be an entry.
+             * Next syscall stop will be an entry stop.
              */
             entering_syscall = 1;
         }
 
 
         /* ====================================================
-         * CONTINUE TO NEXT SYSCALL
+         * CONTINUE TRACE
          * ==================================================== */
 
         if (ptrace(PTRACE_SYSCALL,
@@ -642,13 +590,10 @@ int tracer_launch(char *const argv[])
      * FINAL STATISTICS
      * ======================================================== */
 
-    printf("[Tracer] Total syscall calls observed: %lu\n\n",
+    printf("\n[Tracer] Total syscall calls observed: %lu\n\n",
            syscall_count);
 
 
-    /*
-     * Print the complete syscall summary.
-     */
     stats_print();
 
 

@@ -9,13 +9,36 @@
 static char filters[MAX_FILTERS][MAX_NAME_LENGTH];
 static size_t filter_count = 0;
 
+/*
+ * Category filter.
+ *
+ * UNKNOWN means that no category filter
+ * has been configured.
+ */
+static SyscallCategory selected_category =
+    SYSCALL_CATEGORY_UNKNOWN;
+
+
+/*
+ * ============================================================
+ * Initialize filters
+ * ============================================================
+ */
 void filter_init(void)
 {
     filter_count = 0;
 
+    selected_category = SYSCALL_CATEGORY_UNKNOWN;
+
     memset(filters, 0, sizeof(filters));
 }
 
+
+/*
+ * ============================================================
+ * Add syscall-name filter
+ * ============================================================
+ */
 int filter_add(const char *name)
 {
     if (name == NULL || name[0] == '\0') {
@@ -23,19 +46,14 @@ int filter_add(const char *name)
     }
 
     /*
-     * Verify that the syscall name actually exists.
-     *
-     * This prevents commands such as:
-     *
-     *     --filter hello,world
-     *
-     * from silently producing no output.
+     * Verify that the syscall exists.
      */
     int valid = 0;
 
     for (long number = 0; number < 512; number++) {
 
-        const char *known_name = syscall_name(number);
+        const char *known_name =
+            syscall_name(number);
 
         if (strcmp(known_name, name) == 0) {
             valid = 1;
@@ -48,7 +66,7 @@ int filter_add(const char *name)
     }
 
     /*
-     * Prevent the same syscall from being added twice.
+     * Prevent duplicate entries.
      */
     for (size_t i = 0; i < filter_count; i++) {
 
@@ -72,6 +90,12 @@ int filter_add(const char *name)
     return 0;
 }
 
+
+/*
+ * ============================================================
+ * Check syscall-name filter
+ * ============================================================
+ */
 int filter_allows(const char *name)
 {
     if (name == NULL) {
@@ -79,16 +103,13 @@ int filter_allows(const char *name)
     }
 
     /*
-     * No filters means everything is allowed.
+     * No syscall-name filter means
+     * every syscall passes this filter.
      */
     if (filter_count == 0) {
         return 1;
     }
 
-    /*
-     * When filters are configured,
-     * only explicitly selected syscalls are shown.
-     */
     for (size_t i = 0; i < filter_count; i++) {
 
         if (strcmp(filters[i], name) == 0) {
@@ -99,7 +120,94 @@ int filter_allows(const char *name)
     return 0;
 }
 
+
+/*
+ * ============================================================
+ * Check whether syscall-name filtering is enabled
+ * ============================================================
+ */
 int filter_enabled(void)
 {
     return filter_count > 0;
+}
+
+
+/*
+ * ============================================================
+ * Set category filter
+ * ============================================================
+ */
+int filter_set_category(const char *category_name)
+{
+    if (category_name == NULL ||
+        category_name[0] == '\0') {
+
+        return -1;
+    }
+
+    /*
+     * Match category names exactly.
+     */
+    if (strcmp(category_name, "FILE_IO") == 0) {
+
+        selected_category =
+            SYSCALL_CATEGORY_FILE_IO;
+
+    } else if (strcmp(category_name, "MEMORY") == 0) {
+
+        selected_category =
+            SYSCALL_CATEGORY_MEMORY;
+
+    } else if (strcmp(category_name, "PROCESS") == 0) {
+
+        selected_category =
+            SYSCALL_CATEGORY_PROCESS;
+
+    } else if (strcmp(category_name, "NETWORK") == 0) {
+
+        selected_category =
+            SYSCALL_CATEGORY_NETWORK;
+
+    } else if (strcmp(category_name, "SYSTEM") == 0) {
+
+        selected_category =
+            SYSCALL_CATEGORY_SYSTEM;
+
+    } else {
+
+        return -1;
+    }
+
+    return 0;
+}
+
+
+/*
+ * ============================================================
+ * Check whether category filtering is enabled
+ * ============================================================
+ */
+int category_filter_enabled(void)
+{
+    return selected_category !=
+           SYSCALL_CATEGORY_UNKNOWN;
+}
+
+
+/*
+ * ============================================================
+ * Check syscall against category filter
+ * ============================================================
+ */
+int filter_category_allows(long syscall_number)
+{
+    /*
+     * No category filter means everything passes.
+     */
+    if (!category_filter_enabled()) {
+        return 1;
+    }
+
+    return syscall_category(syscall_number) ==
+           selected_category;
 }
