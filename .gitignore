@@ -1,20 +1,28 @@
-# Build artifacts
-build/*
+# Build output
+build/
+
+# Object files
 *.o
-*.a
-*.so
+*.obj
 
-# Executables
-stracelite
+# Compiled example binaries
+examples/fork_target
+examples/signal_target
 
-# Debugging
+# Debug / crash files
 core
 core.*
-vgcore.*
 
 # Editor files
 .vscode/
 .idea/
 
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
 # OS files
 .DS_Store
+Thumbs.db
