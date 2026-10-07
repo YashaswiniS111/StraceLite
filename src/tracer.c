@@ -1,4 +1,3 @@
-
 #define _GNU_SOURCE
 
 #include "tracer.h"
@@ -35,6 +34,9 @@
  * 8. Collect syscall statistics
  * 9. Support syscall-name filtering
  * 10. Support syscall-category filtering
+ * 11. Follow fork()
+ * 12. Follow vfork()
+ * 13. Follow clone()
  *
  * Architecture:
  *
@@ -60,6 +62,39 @@
 
 
 /* ============================================================
+ * Maximum number of simultaneously traced processes
+ * ============================================================ */
+
+#define MAX_TRACEES 128
+
+
+/* ============================================================
+ * Per-process tracing state
+ * ============================================================ */
+
+typedef struct {
+    pid_t pid;
+
+    /*
+     * 1 = next syscall stop is entry
+     * 0 = next syscall stop is exit
+     */
+    int entering_syscall;
+
+    /*
+     * Syscall number belonging to the current
+     * entry/exit pair.
+     */
+    long current_syscall_number;
+
+    /*
+     * Whether this slot is currently active.
+     */
+    int active;
+} TraceeState;
+
+
+/* ============================================================
  * Print syscall arguments
  * ============================================================ */
 
@@ -79,6 +114,118 @@ static void print_syscall_arguments(
            (unsigned long long)regs->r10,
            (unsigned long long)regs->r8,
            (unsigned long long)regs->r9);
+}
+
+
+/* ============================================================
+ * Initialize tracee state
+ * ============================================================ */
+
+static void tracee_state_init(
+    TraceeState *state,
+    pid_t pid)
+{
+    state->pid = pid;
+    state->entering_syscall = 1;
+    state->current_syscall_number = -1;
+    state->active = 1;
+}
+
+
+/* ============================================================
+ * Find tracee state
+ * ============================================================ */
+
+static TraceeState *find_tracee(
+    TraceeState *tracees,
+    pid_t pid)
+{
+    for (int i = 0; i < MAX_TRACEES; i++) {
+
+        if (tracees[i].active &&
+            tracees[i].pid == pid) {
+
+            return &tracees[i];
+        }
+    }
+
+    return NULL;
+}
+
+
+/* ============================================================
+ * Add new tracee
+ * ============================================================ */
+
+static TraceeState *add_tracee(
+    TraceeState *tracees,
+    pid_t pid)
+{
+    /*
+     * Do not add the same PID twice.
+     */
+    TraceeState *existing =
+        find_tracee(tracees, pid);
+
+    if (existing != NULL) {
+        return existing;
+    }
+
+
+    for (int i = 0; i < MAX_TRACEES; i++) {
+
+        if (!tracees[i].active) {
+
+            tracee_state_init(
+                &tracees[i],
+                pid);
+
+            return &tracees[i];
+        }
+    }
+
+
+    fprintf(stderr,
+            "[Tracer] Maximum number of tracees reached\n");
+
+    return NULL;
+}
+
+
+/* ============================================================
+ * Remove tracee
+ * ============================================================ */
+
+static void remove_tracee(
+    TraceeState *tracees,
+    pid_t pid)
+{
+    TraceeState *state =
+        find_tracee(tracees, pid);
+
+    if (state != NULL) {
+        state->active = 0;
+    }
+}
+
+
+/* ============================================================
+ * Count active tracees
+ * ============================================================ */
+
+static int active_tracee_count(
+    TraceeState *tracees)
+{
+    int count = 0;
+
+    for (int i = 0; i < MAX_TRACEES; i++) {
+
+        if (tracees[i].active) {
+            count++;
+        }
+    }
+
+    return count;
 }
 
 
@@ -107,7 +254,14 @@ int tracer_launch(char *const argv[])
 
 
     /* ========================================================
-     * CREATE CHILD PROCESS
+     * TRACE PROCESS TABLE
+     * ======================================================== */
+
+    TraceeState tracees[MAX_TRACEES] = {0};
+
+
+    /* ========================================================
+     * CREATE INITIAL CHILD PROCESS
      * ======================================================== */
 
     pid_t child = fork();
@@ -174,7 +328,7 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Wait for the child's initial SIGSTOP.
+     * Wait for the initial SIGSTOP.
      */
     if (waitpid(child,
                 &status,
@@ -204,17 +358,45 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Configure ptrace.
-     *
-     * PTRACE_O_TRACESYSGOOD causes syscall stops
-     * to be reported as:
-     *
-     *     SIGTRAP | 0x80
+     * Add the initial tracee.
      */
+    if (add_tracee(tracees, child) == NULL) {
+        return -1;
+    }
+
+
+    /* ========================================================
+     * CONFIGURE PTRACE
+     * ======================================================== */
+
+    /*
+     * PTRACE_O_TRACESYSGOOD:
+     *
+     *     syscall stop = SIGTRAP | 0x80
+     *
+     * PTRACE_O_TRACEFORK:
+     *
+     *     report fork() events
+     *
+     * PTRACE_O_TRACEVFORK:
+     *
+     *     report vfork() events
+     *
+     * PTRACE_O_TRACECLONE:
+     *
+     *     report clone() events
+     */
+    long ptrace_options =
+        PTRACE_O_TRACESYSGOOD |
+        PTRACE_O_TRACEFORK |
+        PTRACE_O_TRACEVFORK |
+        PTRACE_O_TRACECLONE;
+
+
     if (ptrace(PTRACE_SETOPTIONS,
                child,
                NULL,
-               PTRACE_O_TRACESYSGOOD) == -1) {
+               (void *)ptrace_options) == -1) {
 
         perror("ptrace(PTRACE_SETOPTIONS)");
 
@@ -223,7 +405,7 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Continue child until first syscall stop.
+     * Continue initial tracee.
      */
     if (ptrace(PTRACE_SYSCALL,
                child,
@@ -237,42 +419,41 @@ int tracer_launch(char *const argv[])
 
 
     /*
-     * Syscall stop state:
-     *
-     *     1 = syscall entry
-     *     0 = syscall exit
-     */
-    int entering_syscall = 1;
-
-
-    /*
-     * Number of syscalls observed.
+     * Global number of syscall entries observed.
      */
     unsigned long syscall_count = 0;
 
 
-    /*
-     * Syscall number belonging to the current
-     * entry/exit pair.
-     */
-    long current_syscall_number = -1;
-
-
     /* ========================================================
-     * MAIN TRACING LOOP
+     * MAIN MULTI-PROCESS TRACING LOOP
      * ======================================================== */
 
-    while (1) {
+    while (active_tracee_count(tracees) > 0) {
 
         /*
-         * Wait for the next child event.
+         * Wait for ANY traced process.
+         *
+         * __WALL is important because it allows the tracer
+         * to receive events from traced threads created by
+         * clone().
          */
-        if (waitpid(child,
-                    &status,
-                    0) == -1) {
+        pid_t pid = waitpid(
+            -1,
+            &status,
+            __WALL);
+
+
+        if (pid == -1) {
 
             if (errno == EINTR) {
                 continue;
+            }
+
+            /*
+             * No traced children remain.
+             */
+            if (errno == ECHILD) {
+                break;
             }
 
             perror("waitpid");
@@ -282,74 +463,224 @@ int tracer_launch(char *const argv[])
 
 
         /*
-         * Child exited normally.
+         * Find state belonging to this process.
          */
-        if (WIFEXITED(status)) {
-
-            printf("[Tracer] Child exited with status %d\n",
-                   WEXITSTATUS(status));
-
-            break;
-        }
+        TraceeState *state =
+            find_tracee(tracees, pid);
 
 
         /*
-         * Child was terminated by a signal.
+         * A newly created tracee may appear before
+         * its state has been explicitly registered.
          */
-        if (WIFSIGNALED(status)) {
+        if (state == NULL) {
 
-            printf("[Tracer] Child terminated by signal %d\n",
-                   WTERMSIG(status));
+            state = add_tracee(
+                tracees,
+                pid);
 
-            break;
-        }
-
-
-        /*
-         * Ignore unexpected non-stopped states.
-         */
-        if (!WIFSTOPPED(status)) {
-
-            if (ptrace(PTRACE_SYSCALL,
-                       child,
-                       NULL,
-                       NULL) == -1) {
-
-                perror("ptrace(PTRACE_SYSCALL)");
-
+            if (state == NULL) {
                 return -1;
             }
+        }
+
+
+        /* ====================================================
+         * PROCESS EXIT
+         * ==================================================== */
+
+        if (WIFEXITED(status)) {
+
+            printf("[Tracer] PID %d exited with status %d\n",
+                   pid,
+                   WEXITSTATUS(status));
+
+            remove_tracee(tracees, pid);
+
+            continue;
+        }
+
+
+        /* ====================================================
+         * PROCESS TERMINATED BY SIGNAL
+         * ==================================================== */
+
+        if (WIFSIGNALED(status)) {
+
+            printf("[Tracer] PID %d terminated by signal %d\n",
+                   pid,
+                   WTERMSIG(status));
+
+            remove_tracee(tracees, pid);
 
             continue;
         }
 
 
         /*
-         * Get the signal that caused the stop.
+         * Ignore unexpected states.
          */
-        int signal_number = WSTOPSIG(status);
+        if (!WIFSTOPPED(status)) {
+            continue;
+        }
+
+
+        int signal_number =
+            WSTOPSIG(status);
 
 
         /* ====================================================
-         * HANDLE PTRACE SIGTRAP
+         * HANDLE PTRACE PROCESS EVENTS
          * ==================================================== */
 
         /*
-         * After execve(), Linux generates a plain SIGTRAP.
+         * ptrace event information is stored in:
          *
-         * This belongs to ptrace and should not be delivered
-         * to the tracee.
+         *     status >> 16
+         *
+         * The signal itself is SIGTRAP.
+         */
+        unsigned int event =
+            (unsigned int)status >> 16;
+
+
+        if (signal_number == SIGTRAP &&
+            event != 0) {
+
+            unsigned long event_message = 0;
+
+
+            /*
+             * Obtain PID associated with the event.
+             */
+            if (ptrace(PTRACE_GETEVENTMSG,
+                       pid,
+                       NULL,
+                       &event_message) == -1) {
+
+                perror("ptrace(PTRACE_GETEVENTMSG)");
+
+                return -1;
+            }
+
+
+            pid_t new_pid =
+                (pid_t)event_message;
+
+
+            /*
+             * ------------------------------------------------
+             * FORK
+             * ------------------------------------------------
+             */
+
+            if (event == PTRACE_EVENT_FORK) {
+
+                printf("[Tracer] PID %d created child PID %d "
+                       "using fork()\n",
+                       pid,
+                       new_pid);
+            }
+
+
+            /*
+             * ------------------------------------------------
+             * VFORK
+             * ------------------------------------------------
+             */
+
+            else if (event == PTRACE_EVENT_VFORK) {
+
+                printf("[Tracer] PID %d created child PID %d "
+                       "using vfork()\n",
+                       pid,
+                       new_pid);
+            }
+
+
+            /*
+             * ------------------------------------------------
+             * CLONE
+             * ------------------------------------------------
+             */
+
+            else if (event == PTRACE_EVENT_CLONE) {
+
+                printf("[Tracer] PID %d created child PID %d "
+                       "using clone()\n",
+                       pid,
+                       new_pid);
+            }
+
+
+            /*
+             * Register the new process/thread.
+             *
+             * The kernel has already attached it to the
+             * tracer because the corresponding ptrace option
+             * was enabled.
+             */
+            if (event == PTRACE_EVENT_FORK ||
+                event == PTRACE_EVENT_VFORK ||
+                event == PTRACE_EVENT_CLONE) {
+
+                if (add_tracee(
+                        tracees,
+                        new_pid) == NULL) {
+
+                    return -1;
+                }
+            }
+
+
+            /*
+             * Continue the process that generated the event.
+             */
+            if (ptrace(PTRACE_SYSCALL,
+                       pid,
+                       NULL,
+                       NULL) == -1) {
+
+                /*
+                 * The process may have exited between the
+                 * event and this call.
+                 */
+                if (errno != ESRCH) {
+
+                    perror("ptrace(PTRACE_SYSCALL)");
+
+                    return -1;
+                }
+            }
+
+
+            continue;
+        }
+
+
+        /* ====================================================
+         * HANDLE PLAIN SIGTRAP
+         * ==================================================== */
+
+        /*
+         * A plain SIGTRAP can occur after execve().
+         *
+         * It is generated by ptrace and should not be
+         * delivered to the tracee.
          */
         if (signal_number == SIGTRAP) {
 
             if (ptrace(PTRACE_SYSCALL,
-                       child,
+                       pid,
                        NULL,
                        NULL) == -1) {
 
-                perror("ptrace(PTRACE_SYSCALL)");
+                if (errno != ESRCH) {
 
-                return -1;
+                    perror("ptrace(PTRACE_SYSCALL)");
+
+                    return -1;
+                }
             }
 
             continue;
@@ -361,16 +692,17 @@ int tracer_launch(char *const argv[])
          * ==================================================== */
 
         /*
-         * A syscall stop is:
+         * Syscall stops are:
          *
          *     SIGTRAP | 0x80
          *
-         * Any other signal is a real signal delivered to
-         * the tracee.
+         * Everything else is a real signal.
          */
-        if (signal_number != (SIGTRAP | 0x80)) {
+        if (signal_number !=
+            (SIGTRAP | 0x80)) {
 
-            int deliver_signal = signal_number;
+            int deliver_signal =
+                signal_number;
 
 
             /*
@@ -381,14 +713,18 @@ int tracer_launch(char *const argv[])
             }
 
 
-            if (ptrace(PTRACE_SYSCALL,
-                       child,
-                       NULL,
-                       (void *)(long)deliver_signal) == -1) {
+            if (ptrace(
+                    PTRACE_SYSCALL,
+                    pid,
+                    NULL,
+                    (void *)(long)deliver_signal) == -1) {
 
-                perror("ptrace(PTRACE_SYSCALL)");
+                if (errno != ESRCH) {
 
-                return -1;
+                    perror("ptrace(PTRACE_SYSCALL)");
+
+                    return -1;
+                }
             }
 
             continue;
@@ -401,10 +737,15 @@ int tracer_launch(char *const argv[])
 
         struct user_regs_struct regs;
 
+
         if (ptrace(PTRACE_GETREGS,
-                   child,
+                   pid,
                    NULL,
                    &regs) == -1) {
+
+            if (errno == ESRCH) {
+                continue;
+            }
 
             perror("ptrace(PTRACE_GETREGS)");
 
@@ -416,7 +757,7 @@ int tracer_launch(char *const argv[])
          * SYSCALL ENTRY
          * ==================================================== */
 
-        if (entering_syscall) {
+        if (state->entering_syscall) {
 
             /*
              * On x86-64 Linux:
@@ -427,7 +768,7 @@ int tracer_launch(char *const argv[])
                 (long)regs.orig_rax;
 
 
-            current_syscall_number =
+            state->current_syscall_number =
                 syscall_number;
 
 
@@ -449,7 +790,7 @@ int tracer_launch(char *const argv[])
              * EXECVE MEMORY DECODING
              * =================================================
              *
-             * execve() has:
+             * execve():
              *
              *     rdi = filename
              */
@@ -457,13 +798,16 @@ int tracer_launch(char *const argv[])
 
                 char path[4096];
 
+
                 if (tracee_read_string(
-                        child,
+                        pid,
                         (unsigned long)regs.rdi,
                         path,
                         sizeof(path)) == 0) {
 
-                    printf("[Decoded] execve path: \"%s\"\n",
+                    printf("[Decoded] PID %d execve path: "
+                           "\"%s\"\n",
+                           pid,
                            path);
                 }
             }
@@ -473,19 +817,14 @@ int tracer_launch(char *const argv[])
              * =================================================
              * FILTERING
              * =================================================
-             *
-             * A syscall is displayed only when:
-             *
-             * 1. It passes the syscall-name filter
-             * 2. It passes the category filter
-             *
-             * If either filter is disabled, that filter
-             * automatically allows the syscall.
              */
             if (filter_allows(name) &&
-                filter_category_allows(syscall_number)) {
+                filter_category_allows(
+                    syscall_number)) {
 
-                printf("[Syscall Entry] #%lu  %ld (%s)\n",
+                printf("[Syscall Entry] "
+                       "PID %d  #%lu  %ld (%s)\n",
+                       pid,
                        syscall_count - 1,
                        syscall_number,
                        name);
@@ -495,9 +834,9 @@ int tracer_launch(char *const argv[])
 
 
             /*
-             * Next syscall stop will be an exit stop.
+             * Next syscall stop is exit.
              */
-            entering_syscall = 0;
+            state->entering_syscall = 0;
         }
 
 
@@ -518,28 +857,30 @@ int tracer_launch(char *const argv[])
              * Get syscall name.
              */
             const char *name =
-                syscall_name(current_syscall_number);
+                syscall_name(
+                    state->current_syscall_number);
 
 
             /*
              * Record statistics for every syscall.
-             *
-             * Statistics are NOT affected by filtering.
              */
-            stats_record(current_syscall_number,
-                         return_value);
+            stats_record(
+                state->current_syscall_number,
+                return_value);
 
 
             /*
-             * Display exit only if both filters allow it.
+             * Display exit only when filters allow it.
              */
             if (filter_allows(name) &&
                 filter_category_allows(
-                    current_syscall_number)) {
+                    state->current_syscall_number)) {
 
-                printf("[Syscall Exit ] #%lu  %ld (%s)",
+                printf("[Syscall Exit ] "
+                       "PID %d  #%lu  %ld (%s)",
+                       pid,
                        syscall_count - 1,
-                       current_syscall_number,
+                       state->current_syscall_number,
                        name);
 
 
@@ -564,9 +905,9 @@ int tracer_launch(char *const argv[])
 
 
             /*
-             * Next syscall stop will be an entry stop.
+             * Next syscall stop is entry.
              */
-            entering_syscall = 1;
+            state->entering_syscall = 1;
         }
 
 
@@ -575,13 +916,16 @@ int tracer_launch(char *const argv[])
          * ==================================================== */
 
         if (ptrace(PTRACE_SYSCALL,
-                   child,
+                   pid,
                    NULL,
                    NULL) == -1) {
 
-            perror("ptrace(PTRACE_SYSCALL)");
+            if (errno != ESRCH) {
 
-            return -1;
+                perror("ptrace(PTRACE_SYSCALL)");
+
+                return -1;
+            }
         }
     }
 
